@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"io/ioutil"
 	"log"
 	"os"
@@ -56,62 +57,94 @@ func main() {
 	os.Stdout.WriteString(result)
 }
 
+func done(ctx context.Context) bool {
+	select {
+	case <-ctx.Done():
+		return true
+	default:
+		return false
+	}
+}
+
 func run() (string, error) {
-	err := termbox.Init()
-	if err != nil {
+	if err := termbox.Init(); err != nil {
 		panic(err)
 	}
+	// Kill program with CtrlC
 	termbox.SetInputMode(termbox.InputAlt)
 	defer termbox.Close()
 
-	go results.Init()
+	ctx, cancel := context.WithCancel(context.Background())
+	go results.Init(ctx)
 
-	for {
-		switch ev := termbox.PollEvent(); ev.Type {
-		case termbox.EventKey:
-			switch ev.Key {
-			case termbox.KeyEnter:
-				return results.Selected(), nil
-			case termbox.KeyEsc:
-				return ".", nil
-			case termbox.KeyCtrlC:
-				return ".", nil
-			case termbox.KeyArrowLeft, termbox.KeyCtrlB:
-				go search.MoveCursorOneRuneBackward()
-			case termbox.KeyArrowRight, termbox.KeyCtrlF:
-				go search.MoveCursorOneRuneForward()
-			case termbox.KeyBackspace, termbox.KeyBackspace2:
-				if ev.Mod == termbox.ModAlt {
-					go search.DeleteWordBackward()
-				} else {
-					go search.DeleteRuneBackward()
-				}
-			case termbox.KeyDelete, termbox.KeyCtrlD:
-				go search.DeleteRuneForward()
-			case termbox.KeySpace:
-				go search.InsertRune(' ')
-			case termbox.KeyArrowDown:
-				go results.MoveSelectionDownOne()
-			case termbox.KeyArrowUp:
-				go results.MoveSelectionUpOne()
-			default:
-				if ev.Ch != 0 {
-					if ev.Mod == termbox.ModAlt {
-						switch ev.Ch {
-						case 'b':
-							go search.MoveCursorOneWordBackward()
-						case 'f':
-							go search.MoveCursorOneWordForward()
-						}
-					} else {
-						go search.InsertRune(ev.Ch)
-					}
-				}
+	selectedCh := make(chan string)
+	errCh := make(chan error)
+
+	go func() {
+		for {
+			ev := termbox.PollEvent()
+			if done(ctx) {
+				return
 			}
-		case termbox.EventError:
-			return "", ev.Err
+			switch ev.Type {
+			case termbox.EventKey:
+				go func(ev termbox.Event) {
+					defer redrawAll()
+
+					switch ev.Key {
+					case termbox.KeyEnter:
+						cancel()
+						selectedCh <- results.Selected()
+						errCh <- nil
+						return
+					case termbox.KeyEsc, termbox.KeyCtrlC:
+						cancel()
+						selectedCh <- "."
+						errCh <- nil
+						return
+					case termbox.KeyArrowLeft, termbox.KeyCtrlB:
+						search.MoveCursorOneRuneBackward()
+					case termbox.KeyArrowRight, termbox.KeyCtrlF:
+						search.MoveCursorOneRuneForward()
+					case termbox.KeyBackspace, termbox.KeyBackspace2:
+						if ev.Mod == termbox.ModAlt {
+							search.DeleteWordBackward()
+						} else {
+							search.DeleteRuneBackward()
+						}
+					case termbox.KeyDelete, termbox.KeyCtrlD:
+						search.DeleteRuneForward()
+					case termbox.KeySpace:
+						search.InsertRune(' ')
+					case termbox.KeyArrowDown:
+						results.MoveSelectionDownOne()
+					case termbox.KeyArrowUp:
+						results.MoveSelectionUpOne()
+					default:
+						if ev.Ch != 0 {
+							if ev.Mod == termbox.ModAlt {
+								switch ev.Ch {
+								case 'b':
+									search.MoveCursorOneWordBackward()
+								case 'f':
+									search.MoveCursorOneWordForward()
+								}
+							} else {
+								search.InsertRune(ev.Ch)
+							}
+						}
+					}
+				}(ev)
+			case termbox.EventError:
+				cancel()
+				selectedCh <- "."
+				errCh <- ev.Err
+				return
+			}
 		}
-	}
+	}()
+
+	return <-selectedCh, <-errCh
 }
 
 type resultsBox struct {
@@ -122,17 +155,21 @@ type resultsBox struct {
 	filepaths []string
 }
 
-func readirs(dirname string, filepaths chan<- []string) {
+func readirs(ctx context.Context, dirname string, filepaths chan<- []string) {
 	infos, err := ioutil.ReadDir(dirname)
 	if err != nil {
 		return
 	}
 	var dirpaths []string
 	for _, info := range infos {
+		if done(ctx) {
+			return
+		}
+
 		if info.IsDir() {
 			subdir := filepath.Join(dirname, info.Name())
 			dirpaths = append(dirpaths, subdir)
-			go readirs(subdir, filepaths)
+			go readirs(ctx, subdir, filepaths)
 		}
 	}
 	if len(dirpaths) > 0 {
@@ -140,14 +177,18 @@ func readirs(dirname string, filepaths chan<- []string) {
 	}
 }
 
-func (b *resultsBox) Init() {
+func (b *resultsBox) Init(ctx context.Context) {
 	b.AppendFilepaths([]string{search.basepath})
 
 	dirs := make(chan []string)
 
-	go readirs(search.basepath, dirs)
+	go readirs(ctx, search.basepath, dirs)
 
 	for filepaths := range dirs {
+		if done(ctx) {
+			return
+		}
+
 		b.AppendFilepaths(filepaths)
 		redrawAll()
 	}
@@ -177,8 +218,6 @@ func (b *resultsBox) MoveSelectionDownOne() {
 		return
 	}
 	b.selected++
-
-	redrawAll()
 }
 
 func (b *resultsBox) MoveSelectionUpOne() {
@@ -189,8 +228,6 @@ func (b *resultsBox) MoveSelectionUpOne() {
 		return
 	}
 	b.selected--
-
-	redrawAll()
 }
 
 func (b *resultsBox) AppendFilepaths(filepaths []string) {
@@ -221,7 +258,6 @@ func (b *resultsBox) Recalculate() {
 	if b.selected >= len(b.matches) {
 		b.selected = len(b.matches) - 1
 	}
-	redrawAll()
 }
 
 func (b *resultsBox) SelectBestMatch() {
@@ -236,8 +272,6 @@ func (b *resultsBox) SelectBestMatch() {
 			b.selected = i
 		}
 	}
-
-	redrawAll()
 }
 
 func (b *resultsBox) Selected() string {
@@ -336,8 +370,6 @@ func (b *searchBox) InsertRune(r rune) {
 		results.Recalculate()
 		results.SelectBestMatch()
 	}()
-
-	redrawAll()
 }
 
 func (b *searchBox) MoveCursorOneRuneBackward() {
@@ -352,8 +384,6 @@ func (b *searchBox) MoveCursorOneRuneForward() {
 		return
 	}
 	b.cursorOffsetX++
-
-	redrawAll()
 }
 
 func (b *searchBox) MoveCursorOneWordBackward() {
@@ -368,8 +398,6 @@ func (b *searchBox) MoveCursorOneWordBackward() {
 	prefix = strings.TrimRightFunc(prefix, word)
 
 	b.cursorOffsetX = len([]rune(prefix))
-
-	redrawAll()
 }
 
 func (b *searchBox) MoveCursorOneWordForward() {
@@ -384,8 +412,6 @@ func (b *searchBox) MoveCursorOneWordForward() {
 	suffix = strings.TrimLeftFunc(suffix, word)
 
 	b.cursorOffsetX = len(b.value) - len([]rune(suffix))
-
-	redrawAll()
 }
 
 func (b *searchBox) DeleteRuneBackward() {
@@ -399,8 +425,6 @@ func (b *searchBox) DeleteRuneBackward() {
 		results.Recalculate()
 		results.SelectBestMatch()
 	}()
-
-	redrawAll()
 }
 
 func (b *searchBox) DeleteWordBackward() {
@@ -421,8 +445,6 @@ func (b *searchBox) DeleteWordBackward() {
 		results.Recalculate()
 		results.SelectBestMatch()
 	}()
-
-	redrawAll()
 }
 
 func (b *searchBox) DeleteRuneForward() {
@@ -435,8 +457,6 @@ func (b *searchBox) DeleteRuneForward() {
 		results.Recalculate()
 		results.SelectBestMatch()
 	}()
-
-	redrawAll()
 }
 
 var drawMutex sync.Mutex
@@ -481,7 +501,6 @@ func (b *debugBox) Draw() {
 			termbox.SetCell(x, h-len(lines)+y, r, termbox.ColorDefault, termbox.ColorDefault)
 		}
 	}
-
 }
 
 func (b *debugBox) Write(p []byte) (int, error) {
