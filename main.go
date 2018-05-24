@@ -44,7 +44,13 @@ func initResultsBox() *resultsBox {
 		if err != nil {
 			return nil
 		}
+		if path == basepath {
+			return nil
+		}
 		if info.IsDir() {
+			if info.Name() == ".git" {
+				return filepath.SkipDir
+			}
 			filepaths = append(filepaths, path)
 		}
 		return nil
@@ -107,7 +113,16 @@ func run() (string, error) {
 				results.MoveSelectionUpOne()
 			default:
 				if ev.Ch != 0 {
-					search.InsertRune(ev.Ch)
+					if ev.Mod == termbox.ModAlt {
+						switch ev.Ch {
+						case 'b':
+							search.MoveCursorOneWordBackward()
+						case 'f':
+							search.MoveCursorOneWordForward()
+						}
+					} else {
+						search.InsertRune(ev.Ch)
+					}
 				}
 			}
 		case termbox.EventError:
@@ -159,6 +174,7 @@ func (b *resultsBox) Draw() {
 		if y == b.selected {
 			fg = termbox.ColorCyan
 			bg = termbox.ColorBlack
+			termbox.SetCell(0, y+3, '>', fg, bg)
 		}
 		for x, r := range b.displayPath(path) {
 			termbox.SetCell(x+1, y+3, r, fg, bg)
@@ -226,6 +242,18 @@ func (b *resultsBox) Selected() string {
 	return b.matches[b.selected]
 }
 
+func delim(r rune) bool {
+	switch r {
+	case '\\', '/', ' ', '.', '\t', ',', '-', '|':
+		return true
+	}
+	return false
+}
+
+func word(r rune) bool {
+	return !delim(r)
+}
+
 type searchBox struct {
 	cursorOffsetX int
 	cursorOffsetY int
@@ -274,6 +302,34 @@ func (b *searchBox) MoveCursorOneRuneForward() {
 	b.cursorOffsetX++
 }
 
+func (b *searchBox) MoveCursorOneWordBackward() {
+	if b.cursorOffsetX <= 0 {
+		return
+	}
+
+	prefix := string(b.value[:b.cursorOffsetX])
+
+	// trim all delims then one word
+	prefix = strings.TrimRightFunc(prefix, delim)
+	prefix = strings.TrimRightFunc(prefix, word)
+
+	b.cursorOffsetX = len([]rune(prefix))
+}
+
+func (b *searchBox) MoveCursorOneWordForward() {
+	if b.cursorOffsetX >= len(b.value) {
+		return
+	}
+
+	suffix := string(b.value[b.cursorOffsetX:])
+
+	// trim all delims then one word
+	suffix = strings.TrimLeftFunc(suffix, delim)
+	suffix = strings.TrimLeftFunc(suffix, word)
+
+	b.cursorOffsetX = len(b.value) - len([]rune(suffix))
+}
+
 func (b *searchBox) DeleteRuneBackward() {
 	if b.cursorOffsetX <= 0 {
 		return
@@ -287,17 +343,6 @@ func (b *searchBox) DeleteRuneBackward() {
 func (b *searchBox) DeleteWordBackward() {
 	if b.cursorOffsetX <= 0 {
 		return
-	}
-
-	delim := func(r rune) bool {
-		switch r {
-		case '\\', '/', ' ', '.', '\t', ',', '-', '|':
-			return true
-		}
-		return false
-	}
-	word := func(r rune) bool {
-		return !delim(r)
 	}
 
 	prefix := string(b.value[:b.cursorOffsetX])
