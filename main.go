@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"io/ioutil"
 	"log"
 	"os"
@@ -13,6 +12,30 @@ import (
 
 	"github.com/nsf/termbox-go"
 )
+
+type evType int
+
+const (
+	EventMoveCursorForwardOneRune evType = iota
+	EventMoveCursorBackwardOneRune
+	EventMoveCursorForwardOneWord
+	EventMoveCursorBackwardOneWord
+	EventDeleteRuneForward
+	EventDeleteRuneBackward
+	EventDeleteWordBackward
+	EventInsertRune
+	EventMoveSelectionDownOne
+	EventMoveSelectionUpOne
+	EventSelected
+	EventShutdown
+	EventError
+)
+
+type event struct {
+	evType evType
+	ch     rune
+	err    error
+}
 
 var (
 	search = &searchBox{
@@ -50,23 +73,6 @@ func main() {
 	log.SetOutput(debug)
 	log.SetFlags(0)
 
-	result, err := run()
-	if err != nil {
-		panic(err)
-	}
-	os.Stdout.WriteString(result)
-}
-
-func done(ctx context.Context) bool {
-	select {
-	case <-ctx.Done():
-		return true
-	default:
-		return false
-	}
-}
-
-func run() (string, error) {
 	if err := termbox.Init(); err != nil {
 		panic(err)
 	}
@@ -74,77 +80,111 @@ func run() (string, error) {
 	termbox.SetInputMode(termbox.InputAlt)
 	defer termbox.Close()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	go results.Init(ctx)
+	eventCh := make(chan event)
 
-	selectedCh := make(chan string)
-	errCh := make(chan error)
+	go pollEvents(eventCh)
 
-	go func() {
-		for {
-			ev := termbox.PollEvent()
-			if done(ctx) {
-				return
+	result, err := run(eventCh)
+	if err != nil {
+		panic(err)
+	}
+	os.Stdout.WriteString(result)
+}
+
+func pollEvents(eventCh chan<- event) {
+	for {
+		ev := termbox.PollEvent()
+		if ev.Type == termbox.EventError {
+			eventCh <- event{evType: EventError, err: ev.Err}
+			return
+		}
+		if ev.Type != termbox.EventKey {
+			continue
+		}
+
+		switch ev.Key {
+		case termbox.KeyEnter:
+			eventCh <- event{evType: EventSelected}
+			return
+		case termbox.KeyEsc, termbox.KeyCtrlC:
+			eventCh <- event{evType: EventShutdown}
+			return
+		case termbox.KeyArrowLeft, termbox.KeyCtrlB:
+			eventCh <- event{evType: EventMoveCursorBackwardOneRune}
+		case termbox.KeyArrowRight, termbox.KeyCtrlF:
+			eventCh <- event{evType: EventMoveCursorForwardOneRune}
+		case termbox.KeyBackspace, termbox.KeyBackspace2:
+			if ev.Mod == termbox.ModAlt {
+				eventCh <- event{evType: EventDeleteWordBackward}
+			} else {
+				eventCh <- event{evType: EventDeleteRuneBackward}
 			}
-			switch ev.Type {
-			case termbox.EventKey:
-				go func(ev termbox.Event) {
-					defer redrawAll()
-
-					switch ev.Key {
-					case termbox.KeyEnter:
-						cancel()
-						selectedCh <- results.Selected()
-						errCh <- nil
-						return
-					case termbox.KeyEsc, termbox.KeyCtrlC:
-						cancel()
-						selectedCh <- "."
-						errCh <- nil
-						return
-					case termbox.KeyArrowLeft, termbox.KeyCtrlB:
-						search.MoveCursorOneRuneBackward()
-					case termbox.KeyArrowRight, termbox.KeyCtrlF:
-						search.MoveCursorOneRuneForward()
-					case termbox.KeyBackspace, termbox.KeyBackspace2:
-						if ev.Mod == termbox.ModAlt {
-							search.DeleteWordBackward()
-						} else {
-							search.DeleteRuneBackward()
-						}
-					case termbox.KeyDelete, termbox.KeyCtrlD:
-						search.DeleteRuneForward()
-					case termbox.KeySpace:
-						search.InsertRune(' ')
-					case termbox.KeyArrowDown:
-						results.MoveSelectionDownOne()
-					case termbox.KeyArrowUp:
-						results.MoveSelectionUpOne()
-					default:
-						if ev.Ch != 0 {
-							if ev.Mod == termbox.ModAlt {
-								switch ev.Ch {
-								case 'b':
-									search.MoveCursorOneWordBackward()
-								case 'f':
-									search.MoveCursorOneWordForward()
-								}
-							} else {
-								search.InsertRune(ev.Ch)
-							}
-						}
+		case termbox.KeyDelete, termbox.KeyCtrlD:
+			eventCh <- event{evType: EventDeleteRuneForward}
+		case termbox.KeySpace:
+			eventCh <- event{evType: EventInsertRune, ch: ' '}
+		case termbox.KeyArrowDown:
+			eventCh <- event{evType: EventMoveSelectionDownOne}
+		case termbox.KeyArrowUp:
+			eventCh <- event{evType: EventMoveSelectionUpOne}
+		default:
+			if ev.Ch != 0 {
+				if ev.Mod == termbox.ModAlt {
+					switch ev.Ch {
+					case 'b':
+						eventCh <- event{evType: EventMoveCursorBackwardOneWord}
+					case 'f':
+						eventCh <- event{evType: EventMoveCursorForwardOneWord}
 					}
-				}(ev)
-			case termbox.EventError:
-				cancel()
-				selectedCh <- "."
-				errCh <- ev.Err
-				return
+				} else {
+					eventCh <- event{evType: EventInsertRune, ch: ev.Ch}
+				}
 			}
 		}
-	}()
+	}
+}
 
-	return <-selectedCh, <-errCh
+func run(eventCh <-chan event) (string, error) {
+	go results.Init()
+
+	for ev := range eventCh {
+		switch ev.evType {
+		case EventSelected:
+			return results.Selected(), nil
+		case EventShutdown:
+			return ".", nil // TODO: os.Exit?
+		case EventError:
+			return ".", ev.err
+		}
+
+		go func(ev event) {
+			switch ev.evType {
+			case EventInsertRune:
+				search.InsertRune(ev.ch)
+			case EventMoveCursorBackwardOneRune:
+				search.MoveCursorOneRuneBackward()
+			case EventMoveCursorBackwardOneWord:
+				search.MoveCursorOneWordBackward()
+			case EventMoveCursorForwardOneRune:
+				search.MoveCursorOneRuneForward()
+			case EventMoveCursorForwardOneWord:
+				search.MoveCursorOneWordForward()
+			case EventDeleteRuneBackward:
+				search.DeleteRuneBackward()
+			case EventDeleteRuneForward:
+				search.DeleteRuneForward()
+			case EventDeleteWordBackward:
+				search.DeleteWordBackward()
+			case EventMoveSelectionDownOne:
+				results.MoveSelectionDownOne()
+			case EventMoveSelectionUpOne:
+				results.MoveSelectionUpOne()
+			}
+			redrawAll()
+		}(ev)
+	}
+
+	return ".", nil
 }
 
 type resultsBox struct {
@@ -155,21 +195,17 @@ type resultsBox struct {
 	filepaths []string
 }
 
-func readirs(ctx context.Context, dirname string, filepaths chan<- []string) {
+func readirs(dirname string, filepaths chan<- []string) {
 	infos, err := ioutil.ReadDir(dirname)
 	if err != nil {
 		return
 	}
 	var dirpaths []string
 	for _, info := range infos {
-		if done(ctx) {
-			return
-		}
-
 		if info.IsDir() {
 			subdir := filepath.Join(dirname, info.Name())
 			dirpaths = append(dirpaths, subdir)
-			go readirs(ctx, subdir, filepaths)
+			go readirs(subdir, filepaths)
 		}
 	}
 	if len(dirpaths) > 0 {
@@ -177,18 +213,14 @@ func readirs(ctx context.Context, dirname string, filepaths chan<- []string) {
 	}
 }
 
-func (b *resultsBox) Init(ctx context.Context) {
+func (b *resultsBox) Init() {
 	b.AppendFilepaths([]string{search.basepath})
 
 	dirs := make(chan []string)
 
-	go readirs(ctx, search.basepath, dirs)
+	go readirs(search.basepath, dirs)
 
 	for filepaths := range dirs {
-		if done(ctx) {
-			return
-		}
-
 		b.AppendFilepaths(filepaths)
 		redrawAll()
 	}
