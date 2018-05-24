@@ -2,27 +2,31 @@ package main
 
 import (
 	"bytes"
+	"io/ioutil"
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
+	"sync"
 
 	"github.com/nsf/termbox-go"
 )
 
 var (
 	search = &searchBox{
+		basepath:      initBasepath(),
 		cursorOffsetX: 0,
 		cursorOffsetY: 0,
 		value:         []rune{},
 	}
-	results = initResultsBox()
+	results = &resultsBox{}
 	debug   = &debugBox{
 		buf: &bytes.Buffer{},
 	}
 )
 
-func initResultsBox() *resultsBox {
+func initBasepath() string {
 	wd, err := os.Getwd()
 	if err != nil {
 		panic(err)
@@ -38,25 +42,7 @@ func initResultsBox() *resultsBox {
 	if basepath == "/" {
 		basepath = wd
 	}
-
-	var filepaths []string
-	filepath.Walk(basepath, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return nil
-		}
-		if info.IsDir() {
-			if info.Name() == ".git" {
-				return filepath.SkipDir
-			}
-			filepaths = append(filepaths, path)
-		}
-		return nil
-	})
-
-	return &resultsBox{
-		basepath:  basepath,
-		filepaths: filepaths,
-	}
+	return basepath
 }
 
 func main() {
@@ -71,6 +57,8 @@ func main() {
 }
 
 func run() (string, error) {
+	go results.InitFilepaths()
+
 	err := termbox.Init()
 	if err != nil {
 		panic(err)
@@ -78,7 +66,7 @@ func run() (string, error) {
 	termbox.SetInputMode(termbox.InputAlt)
 	defer termbox.Close()
 
-	results.CalculateMatches(true)
+	// results.CalculateMatches(true)
 	redrawAll()
 	for {
 		switch ev := termbox.PollEvent(); ev.Type {
@@ -159,13 +147,55 @@ func (b *debugBox) Write(p []byte) (int, error) {
 }
 
 type resultsBox struct {
-	basepath  string
+	matches  []string
+	selected int
+
+	mu        sync.Mutex
 	filepaths []string
-	matches   []string
-	selected  int
+}
+
+func readirs(dirname string, filepaths chan<- []string) {
+	infos, err := ioutil.ReadDir(dirname)
+	if err != nil {
+		return
+	}
+	var dirpaths []string
+	for _, info := range infos {
+		if info.IsDir() && info.Name() != ".git" {
+			subdir := filepath.Join(dirname, info.Name())
+			dirpaths = append(dirpaths, subdir)
+			go readirs(subdir, filepaths)
+		}
+	}
+	if len(dirpaths) > 0 {
+		filepaths <- dirpaths
+	}
+}
+
+func (b *resultsBox) InitFilepaths() {
+	b.filepaths = []string{search.basepath}
+	b.CalculateMatches(true)
+
+	dirs := make(chan []string)
+
+	go readirs(search.basepath, dirs)
+
+	for filepaths := range dirs {
+		b.mu.Lock()
+		all := append(b.filepaths, filepaths...)
+		sort.Strings(all)
+		b.filepaths = all
+		b.mu.Unlock()
+
+		b.CalculateMatches(true)
+		redrawAll()
+	}
 }
 
 func (b *resultsBox) Draw() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
 	for y, path := range b.matches {
 		fg, bg := termbox.ColorDefault, termbox.ColorDefault
 		if y == b.selected {
@@ -179,6 +209,9 @@ func (b *resultsBox) Draw() {
 }
 
 func (b *resultsBox) MoveSelectionDownOne() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
 	if b.selected >= len(b.matches)-1 {
 		return
 	}
@@ -186,6 +219,9 @@ func (b *resultsBox) MoveSelectionDownOne() {
 }
 
 func (b *resultsBox) MoveSelectionUpOne() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
 	if b.selected <= 0 {
 		return
 	}
@@ -193,6 +229,9 @@ func (b *resultsBox) MoveSelectionUpOne() {
 }
 
 func (b *resultsBox) CalculateMatches(selectBestMatch bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
 	b.matches = nil
 	if len(search.value) == 0 {
 		b.matches = b.filepaths
@@ -224,7 +263,7 @@ func (b *resultsBox) CalculateMatches(selectBestMatch bool) {
 }
 
 func (b *resultsBox) displayPath(path string) string {
-	rel, err := filepath.Rel(b.basepath, path)
+	rel, err := filepath.Rel(search.basepath, path)
 	if err != nil {
 		panic(err)
 	}
@@ -251,13 +290,14 @@ func word(r rune) bool {
 }
 
 type searchBox struct {
+	basepath      string
 	cursorOffsetX int
 	cursorOffsetY int
 	value         []rune
 }
 
 func (b *searchBox) Draw() {
-	label := results.basepath + string(filepath.Separator)
+	label := b.basepath + string(filepath.Separator)
 	w, _ := termbox.Size()
 	termbox.SetCell(0, 0, '┌', termbox.ColorDefault, termbox.ColorDefault)
 	termbox.SetCell(0, 1, '│', termbox.ColorDefault, termbox.ColorDefault)
@@ -366,7 +406,12 @@ func (b *searchBox) DeleteRuneForward() {
 	results.CalculateMatches(true)
 }
 
+var drawMutex sync.Mutex
+
 func redrawAll() {
+	drawMutex.Lock()
+	defer drawMutex.Unlock()
+
 	termbox.Clear(termbox.ColorDefault, termbox.ColorDefault)
 	search.Draw()
 	results.Draw()
