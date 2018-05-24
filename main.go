@@ -44,9 +44,6 @@ func initResultsBox() *resultsBox {
 		if err != nil {
 			return nil
 		}
-		if path == basepath {
-			return nil
-		}
 		if info.IsDir() {
 			if info.Name() == ".git" {
 				return filepath.SkipDir
