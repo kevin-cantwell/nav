@@ -169,18 +169,17 @@ func (b *resultsBox) Draw() {
 	for y, path := range b.matches {
 		fg, bg := termbox.ColorDefault, termbox.ColorDefault
 		if y == b.selected {
-			fg = termbox.ColorCyan
-			bg = termbox.ColorBlack
-			termbox.SetCell(0, y+3, '>', fg, bg)
+			termbox.SetCell(0, y+3, '►', fg, bg)
+			fg = termbox.AttrBold | termbox.AttrUnderline
 		}
 		for x, r := range b.displayPath(path) {
-			termbox.SetCell(x+1, y+3, r, fg, bg)
+			termbox.SetCell(x+2, y+3, r, fg, bg)
 		}
 	}
 }
 
 func (b *resultsBox) MoveSelectionDownOne() {
-	if b.selected >= len(b.matches) {
+	if b.selected >= len(b.matches)-1 {
 		return
 	}
 	b.selected++
@@ -272,7 +271,7 @@ func (b *searchBox) Draw() {
 	termbox.SetCell(w-1, 2, '┘', termbox.ColorDefault, termbox.ColorDefault)
 
 	for i, r := range label {
-		termbox.SetCell(i+1, 1, r, termbox.ColorDefault, termbox.ColorDefault)
+		termbox.SetCell(i+1, 1, r, termbox.AttrBold, termbox.ColorDefault)
 	}
 	for i, r := range b.value {
 		termbox.SetCell(len(label)+i+1, 1, r, termbox.ColorDefault, termbox.ColorDefault)
