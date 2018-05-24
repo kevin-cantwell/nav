@@ -264,10 +264,6 @@ func (b *searchBox) Draw() {
 	termbox.SetCell(0, 1, '│', termbox.ColorDefault, termbox.ColorDefault)
 	termbox.SetCell(0, 2, '└', termbox.ColorDefault, termbox.ColorDefault)
 	for i := 1; i < w-1; i++ {
-		// if i-1 < len(label) {
-		// 	termbox.SetCell(i, 0, rune(label[i-1]), termbox.ColorDefault, termbox.ColorDefault)
-		// } else {
-		//   }
 		termbox.SetCell(i, 0, '─', termbox.ColorDefault, termbox.ColorDefault)
 		termbox.SetCell(i, 2, '─', termbox.ColorDefault, termbox.ColorDefault)
 	}
