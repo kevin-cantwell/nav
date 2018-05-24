@@ -224,6 +224,22 @@ func (b *resultsBox) Recalculate() {
 	redrawAll()
 }
 
+func (b *resultsBox) SelectBestMatch() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	var bestScore int
+	for i, match := range b.matches {
+		score := search.Score(match)
+		if score > bestScore {
+			bestScore = score
+			b.selected = i
+		}
+	}
+
+	redrawAll()
+}
+
 func (b *resultsBox) Selected() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -316,7 +332,10 @@ func (b *searchBox) InsertRune(r rune) {
 	b.value = append(b.value[:b.cursorOffsetX], tail...)
 	b.cursorOffsetX++
 
-	go results.Recalculate()
+	go func() {
+		results.Recalculate()
+		results.SelectBestMatch()
+	}()
 
 	redrawAll()
 }
@@ -376,7 +395,10 @@ func (b *searchBox) DeleteRuneBackward() {
 	b.value = append(b.value[:b.cursorOffsetX-1], b.value[b.cursorOffsetX:]...)
 	b.cursorOffsetX--
 
-	go results.Recalculate()
+	go func() {
+		results.Recalculate()
+		results.SelectBestMatch()
+	}()
 
 	redrawAll()
 }
@@ -395,7 +417,10 @@ func (b *searchBox) DeleteWordBackward() {
 	b.value = []rune(prefix + suffix)
 	b.cursorOffsetX = len([]rune(prefix))
 
-	go results.Recalculate()
+	go func() {
+		results.Recalculate()
+		results.SelectBestMatch()
+	}()
 
 	redrawAll()
 }
@@ -406,7 +431,10 @@ func (b *searchBox) DeleteRuneForward() {
 	}
 	b.value = append(b.value[:b.cursorOffsetX], b.value[b.cursorOffsetX+1:]...)
 
-	go results.Recalculate()
+	go func() {
+		results.Recalculate()
+		results.SelectBestMatch()
+	}()
 
 	redrawAll()
 }
