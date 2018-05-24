@@ -57,8 +57,6 @@ func main() {
 }
 
 func run() (string, error) {
-	go results.InitFilepaths()
-
 	err := termbox.Init()
 	if err != nil {
 		panic(err)
@@ -66,8 +64,8 @@ func run() (string, error) {
 	termbox.SetInputMode(termbox.InputAlt)
 	defer termbox.Close()
 
-	// results.CalculateMatches(true)
-	redrawAll()
+	go results.Init()
+
 	for {
 		switch ev := termbox.PollEvent(); ev.Type {
 		case termbox.EventKey:
@@ -79,71 +77,41 @@ func run() (string, error) {
 			case termbox.KeyCtrlC:
 				return ".", nil
 			case termbox.KeyArrowLeft, termbox.KeyCtrlB:
-				search.MoveCursorOneRuneBackward()
+				go search.MoveCursorOneRuneBackward()
 			case termbox.KeyArrowRight, termbox.KeyCtrlF:
-				search.MoveCursorOneRuneForward()
+				go search.MoveCursorOneRuneForward()
 			case termbox.KeyBackspace, termbox.KeyBackspace2:
 				if ev.Mod == termbox.ModAlt {
-					search.DeleteWordBackward()
+					go search.DeleteWordBackward()
 				} else {
-					search.DeleteRuneBackward()
+					go search.DeleteRuneBackward()
 				}
 			case termbox.KeyDelete, termbox.KeyCtrlD:
-				search.DeleteRuneForward()
+				go search.DeleteRuneForward()
 			case termbox.KeySpace:
-				search.InsertRune(' ')
+				go search.InsertRune(' ')
 			case termbox.KeyArrowDown:
-				results.MoveSelectionDownOne()
+				go results.MoveSelectionDownOne()
 			case termbox.KeyArrowUp:
-				results.MoveSelectionUpOne()
+				go results.MoveSelectionUpOne()
 			default:
 				if ev.Ch != 0 {
 					if ev.Mod == termbox.ModAlt {
 						switch ev.Ch {
 						case 'b':
-							search.MoveCursorOneWordBackward()
+							go search.MoveCursorOneWordBackward()
 						case 'f':
-							search.MoveCursorOneWordForward()
+							go search.MoveCursorOneWordForward()
 						}
 					} else {
-						search.InsertRune(ev.Ch)
+						go search.InsertRune(ev.Ch)
 					}
 				}
 			}
 		case termbox.EventError:
 			return "", ev.Err
 		}
-		redrawAll()
 	}
-}
-
-type debugBox struct {
-	buf *bytes.Buffer
-}
-
-func (b *debugBox) Draw() {
-	defer b.buf.Reset()
-
-	if os.Getenv("DEBUG") == "" {
-		return
-	}
-
-	lines := strings.Split(string(b.buf.Bytes()), "\n")
-
-	w, h := termbox.Size()
-	for i := 0; i < w; i++ {
-		termbox.SetCell(i, h-len(lines)-1, '─', termbox.ColorDefault, termbox.ColorDefault)
-	}
-	for y, line := range lines {
-		for x, r := range line {
-			termbox.SetCell(x, h-len(lines)+y, r, termbox.ColorDefault, termbox.ColorDefault)
-		}
-	}
-
-}
-
-func (b *debugBox) Write(p []byte) (int, error) {
-	return b.buf.Write(p)
 }
 
 type resultsBox struct {
@@ -161,7 +129,7 @@ func readirs(dirname string, filepaths chan<- []string) {
 	}
 	var dirpaths []string
 	for _, info := range infos {
-		if info.IsDir() && info.Name() != ".git" {
+		if info.IsDir() {
 			subdir := filepath.Join(dirname, info.Name())
 			dirpaths = append(dirpaths, subdir)
 			go readirs(subdir, filepaths)
@@ -172,22 +140,15 @@ func readirs(dirname string, filepaths chan<- []string) {
 	}
 }
 
-func (b *resultsBox) InitFilepaths() {
-	b.filepaths = []string{search.basepath}
-	b.CalculateMatches(true)
+func (b *resultsBox) Init() {
+	b.AppendFilepaths([]string{search.basepath})
 
 	dirs := make(chan []string)
 
 	go readirs(search.basepath, dirs)
 
 	for filepaths := range dirs {
-		b.mu.Lock()
-		all := append(b.filepaths, filepaths...)
-		sort.Strings(all)
-		b.filepaths = all
-		b.mu.Unlock()
-
-		b.CalculateMatches(true)
+		b.AppendFilepaths(filepaths)
 		redrawAll()
 	}
 }
@@ -202,7 +163,7 @@ func (b *resultsBox) Draw() {
 			termbox.SetCell(0, y+3, '►', fg, bg)
 			fg = termbox.AttrBold | termbox.AttrUnderline
 		}
-		for x, r := range b.displayPath(path) {
+		for x, r := range search.displayPath(path) {
 			termbox.SetCell(x+2, y+3, r, fg, bg)
 		}
 	}
@@ -216,6 +177,8 @@ func (b *resultsBox) MoveSelectionDownOne() {
 		return
 	}
 	b.selected++
+
+	redrawAll()
 }
 
 func (b *resultsBox) MoveSelectionUpOne() {
@@ -226,51 +189,45 @@ func (b *resultsBox) MoveSelectionUpOne() {
 		return
 	}
 	b.selected--
+
+	redrawAll()
 }
 
-func (b *resultsBox) CalculateMatches(selectBestMatch bool) {
+func (b *resultsBox) AppendFilepaths(filepaths []string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	a := b
+	_ = a
+
+	all := append(b.filepaths, filepaths...)
+	sort.Strings(all)
+	b.filepaths = all
+
+	go b.Recalculate()
+}
+
+func (b *resultsBox) Recalculate() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
 	b.matches = nil
-	if len(search.value) == 0 {
-		b.matches = b.filepaths
-		return
-	}
-	var bestScore int
-	for _, path := range b.filepaths {
-		partial := b.displayPath(path)
-		var score int
-		var i int
-		for _, q := range search.value {
-			partial = partial[i:]
-			i = strings.IndexRune(partial, q)
-			if i < 0 {
-				score = -1
-				break
-			}
-			i++
-			score++
-		}
+	for _, filepath := range b.filepaths {
+		score := search.Score(filepath)
 		if score > 0 {
-			b.matches = append(b.matches, path)
-		}
-		if selectBestMatch && score > bestScore {
-			bestScore = score
-			b.selected = len(b.matches) - 1
+			b.matches = append(b.matches, filepath)
 		}
 	}
-}
-
-func (b *resultsBox) displayPath(path string) string {
-	rel, err := filepath.Rel(search.basepath, path)
-	if err != nil {
-		panic(err)
+	if b.selected >= len(b.matches) {
+		b.selected = len(b.matches) - 1
 	}
-	return rel
+	redrawAll()
 }
 
 func (b *resultsBox) Selected() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
 	if b.selected < 0 || len(b.matches) == 0 {
 		return "."
 	}
@@ -294,9 +251,14 @@ type searchBox struct {
 	cursorOffsetX int
 	cursorOffsetY int
 	value         []rune
+
+	mu sync.Mutex
 }
 
 func (b *searchBox) Draw() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
 	label := b.basepath + string(filepath.Separator)
 	w, _ := termbox.Size()
 	termbox.SetCell(0, 0, '┌', termbox.ColorDefault, termbox.ColorDefault)
@@ -320,12 +282,43 @@ func (b *searchBox) Draw() {
 	termbox.SetCursor(len(label)+b.cursorOffsetX+1, b.cursorOffsetY+1)
 }
 
+func (b *searchBox) Score(filepath string) int {
+	// everything matches an empty query equally
+	if len(b.value) == 0 {
+		return 1
+	}
+	partial := b.displayPath(filepath)
+	var score int
+	var i int
+	for _, q := range search.value {
+		partial = partial[i:]
+		i = strings.IndexRune(partial, q)
+		if i < 0 {
+			return 0
+		}
+		i++
+		score++
+	}
+	return score
+}
+
+func (b *searchBox) displayPath(path string) string {
+	rel, err := filepath.Rel(b.basepath, path)
+	if err != nil {
+		panic(err)
+	}
+	return rel
+}
+
 func (b *searchBox) InsertRune(r rune) {
+
 	tail := append([]rune{r}, b.value[b.cursorOffsetX:]...)
 	b.value = append(b.value[:b.cursorOffsetX], tail...)
 	b.cursorOffsetX++
 
-	results.CalculateMatches(true)
+	go results.Recalculate()
+
+	redrawAll()
 }
 
 func (b *searchBox) MoveCursorOneRuneBackward() {
@@ -340,6 +333,8 @@ func (b *searchBox) MoveCursorOneRuneForward() {
 		return
 	}
 	b.cursorOffsetX++
+
+	redrawAll()
 }
 
 func (b *searchBox) MoveCursorOneWordBackward() {
@@ -354,6 +349,8 @@ func (b *searchBox) MoveCursorOneWordBackward() {
 	prefix = strings.TrimRightFunc(prefix, word)
 
 	b.cursorOffsetX = len([]rune(prefix))
+
+	redrawAll()
 }
 
 func (b *searchBox) MoveCursorOneWordForward() {
@@ -368,6 +365,8 @@ func (b *searchBox) MoveCursorOneWordForward() {
 	suffix = strings.TrimLeftFunc(suffix, word)
 
 	b.cursorOffsetX = len(b.value) - len([]rune(suffix))
+
+	redrawAll()
 }
 
 func (b *searchBox) DeleteRuneBackward() {
@@ -377,7 +376,9 @@ func (b *searchBox) DeleteRuneBackward() {
 	b.value = append(b.value[:b.cursorOffsetX-1], b.value[b.cursorOffsetX:]...)
 	b.cursorOffsetX--
 
-	results.CalculateMatches(true)
+	go results.Recalculate()
+
+	redrawAll()
 }
 
 func (b *searchBox) DeleteWordBackward() {
@@ -394,7 +395,9 @@ func (b *searchBox) DeleteWordBackward() {
 	b.value = []rune(prefix + suffix)
 	b.cursorOffsetX = len([]rune(prefix))
 
-	results.CalculateMatches(true)
+	go results.Recalculate()
+
+	redrawAll()
 }
 
 func (b *searchBox) DeleteRuneForward() {
@@ -403,18 +406,56 @@ func (b *searchBox) DeleteRuneForward() {
 	}
 	b.value = append(b.value[:b.cursorOffsetX], b.value[b.cursorOffsetX+1:]...)
 
-	results.CalculateMatches(true)
+	go results.Recalculate()
+
+	redrawAll()
 }
 
 var drawMutex sync.Mutex
 
 func redrawAll() {
-	drawMutex.Lock()
-	defer drawMutex.Unlock()
+	go func() {
+		drawMutex.Lock()
+		defer drawMutex.Unlock()
 
-	termbox.Clear(termbox.ColorDefault, termbox.ColorDefault)
-	search.Draw()
-	results.Draw()
-	debug.Draw()
-	termbox.Flush()
+		termbox.Clear(termbox.ColorDefault, termbox.ColorDefault)
+		search.Draw()
+		results.Draw()
+		debug.Draw()
+		termbox.Flush()
+	}()
+}
+
+type debugBox struct {
+	buf *bytes.Buffer
+
+	mu sync.Mutex
+}
+
+func (b *debugBox) Draw() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	defer b.buf.Reset()
+
+	if os.Getenv("DEBUG") == "" {
+		return
+	}
+
+	lines := strings.Split(string(b.buf.Bytes()), "\n")
+
+	w, h := termbox.Size()
+	for i := 0; i < w; i++ {
+		termbox.SetCell(i, h-len(lines)-1, '─', termbox.ColorDefault, termbox.ColorDefault)
+	}
+	for y, line := range lines {
+		for x, r := range line {
+			termbox.SetCell(x, h-len(lines)+y, r, termbox.ColorDefault, termbox.ColorDefault)
+		}
+	}
+
+}
+
+func (b *debugBox) Write(p []byte) (int, error) {
+	return b.buf.Write(p)
 }
