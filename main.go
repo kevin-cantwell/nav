@@ -258,11 +258,16 @@ type searchBox struct {
 }
 
 func (b *searchBox) Draw() {
+	label := results.basepath + string(filepath.Separator)
 	w, _ := termbox.Size()
 	termbox.SetCell(0, 0, '┌', termbox.ColorDefault, termbox.ColorDefault)
 	termbox.SetCell(0, 1, '│', termbox.ColorDefault, termbox.ColorDefault)
 	termbox.SetCell(0, 2, '└', termbox.ColorDefault, termbox.ColorDefault)
 	for i := 1; i < w-1; i++ {
+		// if i-1 < len(label) {
+		// 	termbox.SetCell(i, 0, rune(label[i-1]), termbox.ColorDefault, termbox.ColorDefault)
+		// } else {
+		//   }
 		termbox.SetCell(i, 0, '─', termbox.ColorDefault, termbox.ColorDefault)
 		termbox.SetCell(i, 2, '─', termbox.ColorDefault, termbox.ColorDefault)
 	}
@@ -270,11 +275,14 @@ func (b *searchBox) Draw() {
 	termbox.SetCell(w-1, 1, '│', termbox.ColorDefault, termbox.ColorDefault)
 	termbox.SetCell(w-1, 2, '┘', termbox.ColorDefault, termbox.ColorDefault)
 
-	for i, r := range b.value {
+	for i, r := range label {
 		termbox.SetCell(i+1, 1, r, termbox.ColorDefault, termbox.ColorDefault)
 	}
+	for i, r := range b.value {
+		termbox.SetCell(len(label)+i+1, 1, r, termbox.ColorDefault, termbox.ColorDefault)
+	}
 
-	termbox.SetCursor(b.cursorOffsetX+1, b.cursorOffsetY+1)
+	termbox.SetCursor(len(label)+b.cursorOffsetX+1, b.cursorOffsetY+1)
 }
 
 func (b *searchBox) InsertRune(r rune) {
