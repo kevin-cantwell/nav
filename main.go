@@ -31,6 +31,8 @@ const (
 	EventMouseDrag
 	EventMousePress
 	EventMouseClick
+	EventMouseScrollDown
+	EventMouseScrollUp
 
 	EventShutdown
 	EventError
@@ -118,7 +120,9 @@ func pollEvents(eventCh chan<- event) {
 						curr = event{evType: EventMouseClick, mouseX: ev.MouseX, mouseY: ev.MouseY}
 					}
 				case termbox.MouseWheelDown:
+					curr = event{evType: EventMouseScrollDown, mouseX: ev.MouseX, mouseY: ev.MouseY}
 				case termbox.MouseWheelUp:
+					curr = event{evType: EventMouseScrollUp, mouseX: ev.MouseX, mouseY: ev.MouseY}
 				case termbox.MouseLeft:
 					if prev.evType == EventMousePress || prev.evType == EventMouseDrag {
 						curr = event{evType: EventMouseDrag, mouseX: ev.MouseX, mouseY: ev.MouseY}
@@ -214,6 +218,10 @@ func run(eventCh chan event) (string, error) {
 				results.MoveSelectionUpOne()
 			case EventMouseDrag, EventMousePress:
 				results.MousePress(ev.mouseY)
+			case EventMouseScrollDown:
+				results.MouseScrollDown()
+			case EventMouseScrollUp:
+				results.MouseScrollUp()
 			case EventMouseClick:
 				results.MouseClick(ev.mouseX, ev.mouseY, eventCh)
 			}
@@ -225,8 +233,9 @@ func run(eventCh chan event) (string, error) {
 }
 
 type resultsBox struct {
-	matches  []string
-	selected int
+	matches        []string
+	selected       int
+	displayOffsetY int
 
 	mu        sync.Mutex
 	filepaths []string
@@ -267,9 +276,11 @@ func (b *resultsBox) Draw() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	for y, path := range b.matches {
+	for i := b.displayOffsetY; i < len(b.matches); i++ {
+		y := i - b.displayOffsetY
+		path := b.matches[i]
 		fg, bg := termbox.ColorDefault, termbox.ColorDefault
-		if y == b.selected {
+		if y+b.displayOffsetY == b.selected {
 			termbox.SetCell(0, y+3, '►', fg, bg)
 			fg = termbox.AttrBold | termbox.AttrUnderline
 		}
@@ -279,18 +290,37 @@ func (b *resultsBox) Draw() {
 	}
 }
 
+func (b *resultsBox) focusTop() {
+	b.displayOffsetY = b.selected
+}
+
+func (b *resultsBox) focusBottom() {
+	_, h := termbox.Size()
+	b.displayOffsetY = b.selected - (h - 3) + 1
+}
+
 func (b *resultsBox) MousePress(y int) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	if y-3 < 0 || y-3 >= len(b.matches) {
+	if y-3 < 0 {
+		go b.MouseScrollUp()
 		return
 	}
-	b.selected = y - 3
+
+	if y-3 >= len(b.matches) {
+		go b.MouseScrollDown()
+		return
+	}
+
+	b.selected = y + b.displayOffsetY - 3
 }
 
 func (b *resultsBox) MouseClick(x, y int, eventCh chan<- event) {
-	if y-3 != b.selected {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if y+b.displayOffsetY-3 != b.selected {
 		return
 	}
 	if x-2 < 0 || x-2 >= len([]rune(search.displayPath(b.matches[b.selected]))) {
@@ -299,24 +329,68 @@ func (b *resultsBox) MouseClick(x, y int, eventCh chan<- event) {
 	eventCh <- event{evType: EventSelected}
 }
 
+func (b *resultsBox) MouseScrollDown() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	_, h := termbox.Size()
+
+	if h-3 > len(b.matches)-b.displayOffsetY {
+		return
+	}
+
+	b.displayOffsetY++
+}
+
+func (b *resultsBox) MouseScrollUp() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if b.displayOffsetY <= 0 {
+		return
+	}
+
+	b.displayOffsetY--
+}
+
 func (b *resultsBox) MoveSelectionDownOne() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	if b.selected >= len(b.matches)-1 {
-		return
+	if b.selected < len(b.matches)-1 {
+		b.selected++
 	}
-	b.selected++
+
+	// selected is off screen up above
+	if b.selected < b.displayOffsetY {
+		b.focusTop()
+	}
+
+	// selected is off screen down below
+	_, h := termbox.Size()
+	if b.displayOffsetY+(h-4) < b.selected {
+		b.focusBottom()
+	}
 }
 
 func (b *resultsBox) MoveSelectionUpOne() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	if b.selected <= 0 {
-		return
+	if b.selected > 0 {
+		b.selected--
 	}
-	b.selected--
+
+	// selected is off screen up above
+	if b.selected < b.displayOffsetY {
+		b.focusTop()
+	}
+
+	// selected is off screen down below
+	_, h := termbox.Size()
+	if b.displayOffsetY+(h-4) < b.selected {
+		b.focusBottom()
+	}
 }
 
 func (b *resultsBox) AppendFilepaths(filepaths []string) {
