@@ -27,6 +27,10 @@ const (
 	EventMoveSelectionDownOne
 	EventMoveSelectionUpOne
 	EventSelected
+
+	EventMouseDrag
+	EventMouseClick
+
 	EventShutdown
 	EventError
 )
@@ -34,6 +38,8 @@ const (
 type event struct {
 	evType evType
 	ch     rune
+	mouseX int
+	mouseY int
 	err    error
 }
 
@@ -77,8 +83,7 @@ func main() {
 		panic(err)
 	}
 	// Kill program with CtrlC
-	termbox.SetInputMode(termbox.InputAlt)
-	defer termbox.Close()
+	termbox.SetInputMode(termbox.InputAlt | termbox.InputMouse)
 
 	eventCh := make(chan event)
 
@@ -88,63 +93,88 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+
+	termbox.Close()
 	os.Stdout.WriteString(result)
 }
 
 func pollEvents(eventCh chan<- event) {
+	var prevEv termbox.Event
+	var wasDraggedHere bool
 	for {
-		ev := termbox.PollEvent()
-		if ev.Type == termbox.EventError {
-			eventCh <- event{evType: EventError, err: ev.Err}
-			return
-		}
-		if ev.Type != termbox.EventKey {
-			continue
-		}
-
-		switch ev.Key {
-		case termbox.KeyEnter:
-			eventCh <- event{evType: EventSelected}
-			return
-		case termbox.KeyEsc, termbox.KeyCtrlC:
-			eventCh <- event{evType: EventShutdown}
-			return
-		case termbox.KeyArrowLeft, termbox.KeyCtrlB:
-			eventCh <- event{evType: EventMoveCursorBackwardOneRune}
-		case termbox.KeyArrowRight, termbox.KeyCtrlF:
-			eventCh <- event{evType: EventMoveCursorForwardOneRune}
-		case termbox.KeyBackspace, termbox.KeyBackspace2:
-			if ev.Mod == termbox.ModAlt {
-				eventCh <- event{evType: EventDeleteWordBackward}
-			} else {
-				eventCh <- event{evType: EventDeleteRuneBackward}
+		func() {
+			ev := termbox.PollEvent()
+			defer func() {
+				prevEv = ev
+			}()
+			if ev.Type == termbox.EventError {
+				eventCh <- event{evType: EventError, err: ev.Err}
+				return
 			}
-		case termbox.KeyDelete, termbox.KeyCtrlD:
-			eventCh <- event{evType: EventDeleteRuneForward}
-		case termbox.KeySpace:
-			eventCh <- event{evType: EventInsertRune, ch: ' '}
-		case termbox.KeyArrowDown:
-			eventCh <- event{evType: EventMoveSelectionDownOne}
-		case termbox.KeyArrowUp:
-			eventCh <- event{evType: EventMoveSelectionUpOne}
-		default:
-			if ev.Ch != 0 {
-				if ev.Mod == termbox.ModAlt {
-					switch ev.Ch {
-					case 'b':
-						eventCh <- event{evType: EventMoveCursorBackwardOneWord}
-					case 'f':
-						eventCh <- event{evType: EventMoveCursorForwardOneWord}
+
+			// Mouse events
+			if ev.Type == termbox.EventMouse {
+				switch ev.Key {
+				case termbox.MouseRelease:
+					if !wasDraggedHere {
+						eventCh <- event{evType: EventMouseClick, mouseX: ev.MouseX, mouseY: ev.MouseY}
 					}
-				} else {
-					eventCh <- event{evType: EventInsertRune, ch: ev.Ch}
+				case termbox.MouseWheelDown:
+				case termbox.MouseWheelUp:
+				case termbox.MouseLeft:
+					wasDraggedHere = prevEv.Key == termbox.MouseLeft && prevEv.MouseY != ev.MouseY
+					eventCh <- event{evType: EventMouseDrag, mouseX: ev.MouseX, mouseY: ev.MouseY}
+				default:
 				}
 			}
-		}
+
+			// Keyboard events
+			if ev.Type == termbox.EventKey {
+				switch ev.Key {
+				case termbox.KeyEnter:
+					eventCh <- event{evType: EventSelected}
+					return
+				case termbox.KeyEsc, termbox.KeyCtrlC:
+					eventCh <- event{evType: EventShutdown}
+					return
+				case termbox.KeyArrowLeft, termbox.KeyCtrlB:
+					eventCh <- event{evType: EventMoveCursorBackwardOneRune}
+				case termbox.KeyArrowRight, termbox.KeyCtrlF:
+					eventCh <- event{evType: EventMoveCursorForwardOneRune}
+				case termbox.KeyBackspace, termbox.KeyBackspace2:
+					if ev.Mod == termbox.ModAlt {
+						eventCh <- event{evType: EventDeleteWordBackward}
+					} else {
+						eventCh <- event{evType: EventDeleteRuneBackward}
+					}
+				case termbox.KeyDelete, termbox.KeyCtrlD:
+					eventCh <- event{evType: EventDeleteRuneForward}
+				case termbox.KeySpace:
+					eventCh <- event{evType: EventInsertRune, ch: ' '}
+				case termbox.KeyArrowDown:
+					eventCh <- event{evType: EventMoveSelectionDownOne}
+				case termbox.KeyArrowUp:
+					eventCh <- event{evType: EventMoveSelectionUpOne}
+				default:
+					if ev.Ch != 0 {
+						if ev.Mod == termbox.ModAlt {
+							switch ev.Ch {
+							case 'b':
+								eventCh <- event{evType: EventMoveCursorBackwardOneWord}
+							case 'f':
+								eventCh <- event{evType: EventMoveCursorForwardOneWord}
+							}
+						} else {
+							eventCh <- event{evType: EventInsertRune, ch: ev.Ch}
+						}
+					}
+				}
+			}
+		}()
 	}
 }
 
-func run(eventCh <-chan event) (string, error) {
+func run(eventCh chan event) (string, error) {
 	go results.Init()
 
 	for ev := range eventCh {
@@ -179,6 +209,11 @@ func run(eventCh <-chan event) (string, error) {
 				results.MoveSelectionDownOne()
 			case EventMoveSelectionUpOne:
 				results.MoveSelectionUpOne()
+			case EventMouseDrag:
+				// search.MouseClick(ev.mouseX, ev.mouseY)
+				results.MouseDrag(ev.mouseY)
+			case EventMouseClick:
+				results.MouseClick(ev.mouseX, ev.mouseY, eventCh)
 			}
 			redrawAll()
 		}(ev)
@@ -240,6 +275,26 @@ func (b *resultsBox) Draw() {
 			termbox.SetCell(x+2, y+3, r, fg, bg)
 		}
 	}
+}
+
+func (b *resultsBox) MouseDrag(y int) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if y-3 < 0 || y-3 >= len(b.matches) {
+		return
+	}
+	b.selected = y - 3
+}
+
+func (b *resultsBox) MouseClick(x, y int, eventCh chan<- event) {
+	if y-3 != b.selected {
+		return
+	}
+	if x-2 < 0 || x-2 >= len([]rune(search.displayPath(b.matches[b.selected]))) {
+		return
+	}
+	eventCh <- event{evType: EventSelected}
 }
 
 func (b *resultsBox) MoveSelectionDownOne() {
@@ -390,6 +445,10 @@ func (b *searchBox) displayPath(path string) string {
 		panic(err)
 	}
 	return rel
+}
+
+func (b *searchBox) MouseClick(x, y int) {
+	return
 }
 
 func (b *searchBox) InsertRune(r rune) {
