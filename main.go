@@ -29,6 +29,7 @@ const (
 	EventSelected
 
 	EventMouseDrag
+	EventMousePress
 	EventMouseClick
 
 	EventShutdown
@@ -99,14 +100,10 @@ func main() {
 }
 
 func pollEvents(eventCh chan<- event) {
-	var prevEv termbox.Event
-	var wasDraggedHere bool
+	var prev event
 	for {
 		func() {
 			ev := termbox.PollEvent()
-			defer func() {
-				prevEv = ev
-			}()
 			if ev.Type == termbox.EventError {
 				eventCh <- event{evType: EventError, err: ev.Err}
 				return
@@ -114,18 +111,24 @@ func pollEvents(eventCh chan<- event) {
 
 			// Mouse events
 			if ev.Type == termbox.EventMouse {
+				var curr event
 				switch ev.Key {
 				case termbox.MouseRelease:
-					if !wasDraggedHere {
-						eventCh <- event{evType: EventMouseClick, mouseX: ev.MouseX, mouseY: ev.MouseY}
+					if prev.evType == EventMousePress {
+						curr = event{evType: EventMouseClick, mouseX: ev.MouseX, mouseY: ev.MouseY}
 					}
 				case termbox.MouseWheelDown:
 				case termbox.MouseWheelUp:
 				case termbox.MouseLeft:
-					wasDraggedHere = prevEv.Key == termbox.MouseLeft && prevEv.MouseY != ev.MouseY
-					eventCh <- event{evType: EventMouseDrag, mouseX: ev.MouseX, mouseY: ev.MouseY}
+					if prev.evType == EventMousePress || prev.evType == EventMouseDrag {
+						curr = event{evType: EventMouseDrag, mouseX: ev.MouseX, mouseY: ev.MouseY}
+					} else {
+						curr = event{evType: EventMousePress, mouseX: ev.MouseX, mouseY: ev.MouseY}
+					}
 				default:
 				}
+				eventCh <- curr
+				prev = curr
 			}
 
 			// Keyboard events
@@ -209,9 +212,8 @@ func run(eventCh chan event) (string, error) {
 				results.MoveSelectionDownOne()
 			case EventMoveSelectionUpOne:
 				results.MoveSelectionUpOne()
-			case EventMouseDrag:
-				// search.MouseClick(ev.mouseX, ev.mouseY)
-				results.MouseDrag(ev.mouseY)
+			case EventMouseDrag, EventMousePress:
+				results.MousePress(ev.mouseY)
 			case EventMouseClick:
 				results.MouseClick(ev.mouseX, ev.mouseY, eventCh)
 			}
@@ -277,7 +279,7 @@ func (b *resultsBox) Draw() {
 	}
 }
 
-func (b *resultsBox) MouseDrag(y int) {
+func (b *resultsBox) MousePress(y int) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
