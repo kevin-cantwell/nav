@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"io/ioutil"
 	"log"
 	"os"
@@ -59,23 +60,42 @@ var (
 	}
 )
 
-func initBasepath() string {
+// If
+func initBasepath() (basepath string) {
+	defer func() {
+		_, err := os.Stat(basepath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				fmt.Println("no such file or directory")
+				os.Exit(1)
+			}
+			panic(err)
+		}
+	}()
+
+	if len(os.Args) > 1 {
+		path, err := filepath.Abs(os.Args[1])
+		if err != nil {
+			panic(err)
+		}
+		return path
+	}
 	wd, err := os.Getwd()
 	if err != nil {
 		panic(err)
 	}
-	basepath := wd
-	for ; basepath != "/"; basepath = filepath.Dir(basepath) {
+	path := wd
+	for ; path != "/"; path = filepath.Dir(path) {
 		// keep walking up the tree until we find a git root
-		info, err := os.Stat(filepath.Join(basepath, ".git"))
+		info, err := os.Stat(filepath.Join(path, ".git"))
 		if err == nil && info.IsDir() {
 			break
 		}
 	}
-	if basepath == "/" {
-		basepath = wd
+	if path == "/" {
+		path = wd
 	}
-	return basepath
+	return path
 }
 
 func main() {
@@ -184,6 +204,7 @@ func pollEvents(eventCh chan<- event) {
 func run(eventCh chan event) (string, error) {
 	go results.Init()
 
+	redrawAll()
 	for ev := range eventCh {
 		switch ev.evType {
 		case EventSelected:
@@ -232,6 +253,21 @@ func run(eventCh chan event) (string, error) {
 	return ".", nil
 }
 
+var drawMutex sync.Mutex
+
+func redrawAll() {
+	go func() {
+		drawMutex.Lock()
+		defer drawMutex.Unlock()
+
+		termbox.Clear(termbox.ColorDefault, termbox.ColorDefault)
+		search.Draw()
+		results.Draw()
+		debug.Draw()
+		termbox.Flush()
+	}()
+}
+
 type resultsBox struct {
 	matches        []string
 	selected       int
@@ -248,6 +284,7 @@ func readirs(dirname string, filepaths chan<- []string) {
 	}
 	var dirpaths []string
 	for _, info := range infos {
+		// info.Mode() & os.ModeSymlink // TODO: Do not expand symlinks
 		if info.IsDir() {
 			subdir := filepath.Join(dirname, info.Name())
 			dirpaths = append(dirpaths, subdir)
@@ -623,21 +660,6 @@ func (b *searchBox) DeleteRuneForward() {
 	go func() {
 		results.Recalculate()
 		results.SelectBestMatch()
-	}()
-}
-
-var drawMutex sync.Mutex
-
-func redrawAll() {
-	go func() {
-		drawMutex.Lock()
-		defer drawMutex.Unlock()
-
-		termbox.Clear(termbox.ColorDefault, termbox.ColorDefault)
-		search.Draw()
-		results.Draw()
-		debug.Draw()
-		termbox.Flush()
 	}()
 }
 
