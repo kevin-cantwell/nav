@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"unicode"
 
 	"github.com/nsf/termbox-go"
 )
@@ -284,11 +285,28 @@ func readirs(dirname string, filepaths chan<- []string) {
 	}
 	var dirpaths []string
 	for _, info := range infos {
-		// info.Mode() & os.ModeSymlink // TODO: Do not expand symlinks
+		filename, err := filepath.Abs(filepath.Join(dirname, info.Name()))
+		if err != nil {
+			panic(err)
+		}
+		lstat, err := os.Lstat(filename)
+		if err != nil {
+			panic(err)
+		}
+		if lstat.Mode()&os.ModeSymlink != 0 {
+			// Let symlinks be described as symlinks names
+			symlink, err := os.Readlink(filename)
+			if err != nil {
+				panic(err)
+			}
+			info, err = os.Stat(symlink)
+			if err != nil {
+				panic(err)
+			}
+		}
 		if info.IsDir() {
-			subdir := filepath.Join(dirname, info.Name())
-			dirpaths = append(dirpaths, subdir)
-			go readirs(subdir, filepaths)
+			dirpaths = append(dirpaths, filename)
+			go readirs(filename, filepaths)
 		}
 	}
 	if len(dirpaths) > 0 {
@@ -438,7 +456,17 @@ func (b *resultsBox) AppendFilepaths(filepaths []string) {
 	_ = a
 
 	all := append(b.filepaths, filepaths...)
-	sort.Strings(all)
+	sort.Slice(all, func(i, j int) bool {
+		si := search.Score(all[i])
+		sj := search.Score(all[j])
+		if si == sj {
+			if len(all[i]) == len(all[j]) {
+				return all[i] < all[j]
+			}
+			return len(all[i]) < len(all[j])
+		}
+		return si > sj
+	})
 	b.filepaths = all
 
 	go b.Recalculate()
@@ -464,7 +492,7 @@ func (b *resultsBox) SelectBestMatch() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	var bestScore int
+	var bestScore float32
 	for i, match := range b.matches {
 		score := search.Score(match)
 		if score > bestScore {
@@ -532,22 +560,26 @@ func (b *searchBox) Draw() {
 	termbox.SetCursor(len(label)+b.cursorOffsetX+1, b.cursorOffsetY+1)
 }
 
-func (b *searchBox) Score(filepath string) int {
+func (b *searchBox) Score(filepath string) float32 {
 	// everything matches an empty query equally
 	if len(b.value) == 0 {
 		return 1
 	}
 	partial := b.displayPath(filepath)
-	var score int
-	var i int
+	var score float32
+	var i, prev int
 	for _, q := range search.value {
-		partial = partial[i:]
-		i = strings.IndexRune(partial, q)
+		prev = i
+		partial = strings.ToLower(partial[i:])
+		i = strings.IndexRune(partial, unicode.ToLower(q))
 		if i < 0 {
 			return 0
 		}
 		i++
-		score++
+		score += 1
+		if prev > 0 {
+			score += 1
+		}
 	}
 	return score
 }
