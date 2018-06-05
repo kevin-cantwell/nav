@@ -544,28 +544,24 @@ func (b *searchBox) Draw() {
 	termbox.SetCursor(len(label)+b.cursorOffsetX+1, b.cursorOffsetY+1)
 }
 
-func (b *searchBox) Score(filepath string) float32 {
+func (b *searchBox) Score(path string) float32 {
 	// everything matches an empty query equally
 	if len(b.value) == 0 {
 		return 1
 	}
-	partial := b.displayPath(filepath)
-	var score float32
-	var i, prev int
-	for _, q := range search.value {
-		prev = i
+	partial := b.displayPath(path)
+	var score float32 = 1
+	var i int
+	for _, q := range b.value {
 		partial = strings.ToLower(partial[i:])
 		i = strings.IndexRune(partial, unicode.ToLower(q))
 		if i < 0 {
 			return 0
 		}
 		i++
-		score += 1
-		if prev > 0 {
-			score += 1
-		}
+		score += float32(i)
 	}
-	return score
+	return 1 / score
 }
 
 func (b *searchBox) displayPath(path string) string {
