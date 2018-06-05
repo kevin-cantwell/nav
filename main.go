@@ -61,7 +61,6 @@ var (
 	}
 )
 
-// If
 func initBasepath() (basepath string) {
 	defer func() {
 		_, err := os.Stat(basepath)
@@ -288,21 +287,6 @@ func readirs(dirname string, filepaths chan<- []string) {
 		filename, err := filepath.Abs(filepath.Join(dirname, info.Name()))
 		if err != nil {
 			panic(err)
-		}
-		lstat, err := os.Lstat(filename)
-		if err != nil {
-			panic(err)
-		}
-		if lstat.Mode()&os.ModeSymlink != 0 {
-			// Let symlinks be described as symlinks names
-			symlink, err := os.Readlink(filename)
-			if err != nil {
-				panic(err)
-			}
-			info, err = os.Stat(symlink)
-			if err != nil {
-				panic(err)
-			}
 		}
 		if info.IsDir() {
 			dirpaths = append(dirpaths, filename)
