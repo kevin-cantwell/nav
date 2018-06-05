@@ -151,8 +151,12 @@ func pollEvents(eventCh chan<- event) {
 					}
 				default:
 				}
-				eventCh <- curr
 				prev = curr
+				// skipping mouse events keeps the UI speedy
+				select {
+				case eventCh <- curr:
+				default:
+				}
 			}
 
 			// Keyboard events
@@ -204,7 +208,7 @@ func pollEvents(eventCh chan<- event) {
 func run(eventCh chan event) (string, error) {
 	go results.Init()
 
-	redrawAll()
+	draw()
 	for ev := range eventCh {
 		switch ev.evType {
 		case EventSelected:
@@ -215,39 +219,37 @@ func run(eventCh chan event) (string, error) {
 			return ".", ev.err
 		}
 
-		go func(ev event) {
-			switch ev.evType {
-			case EventInsertRune:
-				search.InsertRune(ev.ch)
-			case EventMoveCursorBackwardOneRune:
-				search.MoveCursorOneRuneBackward()
-			case EventMoveCursorBackwardOneWord:
-				search.MoveCursorOneWordBackward()
-			case EventMoveCursorForwardOneRune:
-				search.MoveCursorOneRuneForward()
-			case EventMoveCursorForwardOneWord:
-				search.MoveCursorOneWordForward()
-			case EventDeleteRuneBackward:
-				search.DeleteRuneBackward()
-			case EventDeleteRuneForward:
-				search.DeleteRuneForward()
-			case EventDeleteWordBackward:
-				search.DeleteWordBackward()
-			case EventMoveSelectionDownOne:
-				results.MoveSelectionDownOne()
-			case EventMoveSelectionUpOne:
-				results.MoveSelectionUpOne()
-			case EventMouseDrag, EventMousePress:
-				results.MousePress(ev.mouseY)
-			case EventMouseScrollDown:
-				results.MouseScrollDown()
-			case EventMouseScrollUp:
-				results.MouseScrollUp()
-			case EventMouseClick:
-				results.MouseClick(ev.mouseX, ev.mouseY, eventCh)
-			}
-			redrawAll()
-		}(ev)
+		switch ev.evType {
+		case EventInsertRune:
+			search.InsertRune(ev.ch)
+		case EventMoveCursorBackwardOneRune:
+			search.MoveCursorOneRuneBackward()
+		case EventMoveCursorBackwardOneWord:
+			search.MoveCursorOneWordBackward()
+		case EventMoveCursorForwardOneRune:
+			search.MoveCursorOneRuneForward()
+		case EventMoveCursorForwardOneWord:
+			search.MoveCursorOneWordForward()
+		case EventDeleteRuneBackward:
+			search.DeleteRuneBackward()
+		case EventDeleteRuneForward:
+			search.DeleteRuneForward()
+		case EventDeleteWordBackward:
+			search.DeleteWordBackward()
+		case EventMoveSelectionDownOne:
+			results.MoveSelectionDownOne()
+		case EventMoveSelectionUpOne:
+			results.MoveSelectionUpOne()
+		case EventMouseDrag, EventMousePress:
+			results.MousePress(ev.mouseY)
+		case EventMouseScrollDown:
+			results.MouseScrollDown()
+		case EventMouseScrollUp:
+			results.MouseScrollUp()
+		case EventMouseClick:
+			results.MouseClick(ev.mouseX, ev.mouseY, eventCh)
+		}
+		draw()
 	}
 
 	return ".", nil
@@ -255,7 +257,7 @@ func run(eventCh chan event) (string, error) {
 
 var drawMutex sync.Mutex
 
-func redrawAll() {
+func draw() {
 	go func() {
 		drawMutex.Lock()
 		defer drawMutex.Unlock()
@@ -307,7 +309,7 @@ func (b *resultsBox) Init() {
 
 	for filepaths := range dirs {
 		b.AppendFilepaths(filepaths)
-		redrawAll()
+		draw()
 	}
 }
 
@@ -365,7 +367,9 @@ func (b *resultsBox) MouseClick(x, y int, eventCh chan<- event) {
 	if x-2 < 0 || x-2 >= len([]rune(search.displayPath(b.matches[b.selected]))) {
 		return
 	}
-	eventCh <- event{evType: EventSelected}
+	go func() {
+		eventCh <- event{evType: EventSelected}
+	}()
 }
 
 func (b *resultsBox) MouseScrollDown() {
@@ -577,6 +581,8 @@ func (b *searchBox) MouseClick(x, y int) {
 }
 
 func (b *searchBox) InsertRune(r rune) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 
 	tail := append([]rune{r}, b.value[b.cursorOffsetX:]...)
 	b.value = append(b.value[:b.cursorOffsetX], tail...)
@@ -589,6 +595,9 @@ func (b *searchBox) InsertRune(r rune) {
 }
 
 func (b *searchBox) MoveCursorOneRuneBackward() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
 	if b.cursorOffsetX <= 0 {
 		return
 	}
@@ -596,6 +605,9 @@ func (b *searchBox) MoveCursorOneRuneBackward() {
 }
 
 func (b *searchBox) MoveCursorOneRuneForward() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
 	if b.cursorOffsetX >= len(b.value) {
 		return
 	}
@@ -603,6 +615,9 @@ func (b *searchBox) MoveCursorOneRuneForward() {
 }
 
 func (b *searchBox) MoveCursorOneWordBackward() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
 	if b.cursorOffsetX <= 0 {
 		return
 	}
@@ -617,6 +632,9 @@ func (b *searchBox) MoveCursorOneWordBackward() {
 }
 
 func (b *searchBox) MoveCursorOneWordForward() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
 	if b.cursorOffsetX >= len(b.value) {
 		return
 	}
@@ -631,6 +649,9 @@ func (b *searchBox) MoveCursorOneWordForward() {
 }
 
 func (b *searchBox) DeleteRuneBackward() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
 	if b.cursorOffsetX <= 0 {
 		return
 	}
@@ -644,6 +665,9 @@ func (b *searchBox) DeleteRuneBackward() {
 }
 
 func (b *searchBox) DeleteWordBackward() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
 	if b.cursorOffsetX <= 0 {
 		return
 	}
@@ -664,6 +688,9 @@ func (b *searchBox) DeleteWordBackward() {
 }
 
 func (b *searchBox) DeleteRuneForward() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
 	if b.cursorOffsetX >= len(b.value) {
 		return
 	}
