@@ -548,6 +548,7 @@ func (b *searchBox) Draw() {
 	termbox.SetCursor(len(label)+b.cursorOffsetX+1, b.cursorOffsetY+1)
 }
 
+// TODO: prioritize whole word matching (ie: "site/site")
 func (b *searchBox) Score(path string) float32 {
 	// everything matches an empty query equally
 	if len(b.value) == 0 {
